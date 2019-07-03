@@ -2,15 +2,20 @@ name: hacker_news_flutter
 description: A new Flutter project.
 
 dependencies:
-  hacker_news_client: 0.1.0
+  hacker_news_client:
+    path: ../../hacker_news_client
+  hnpwa_client:
+    path: ../../hnpwa_client
   http: ^0.11.3+17
   flutter:
     sdk: flutter
+  paging: ^0.1.0
+
   cupertino_icons: ^0.1.2
   isolate: ^2.0.2
   shimmer: ^0.0.4
   url_launcher: ^3.0.3
-  flutter_html: ^0.7.1
+  flutter_html: ^0.9.4
 
 dev_dependencies:
   flutter_test:

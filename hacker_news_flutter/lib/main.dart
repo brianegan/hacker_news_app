@@ -3,8 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_html/flutter_html.dart';
-import 'package:hacker_news_client/hacker_news_client.dart' as hn;
-import 'package:http/http.dart';
+import 'package:hnpwa_client/hnpwa_client.dart';
 import 'package:isolate/isolate.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -26,9 +25,9 @@ class MyApp extends StatelessWidget {
       ),
       home: TopStoriesPage(
         repository: HackerNewsRepository(
-          StoriesCache(),
-          TrendingCache(),
-          hn.HackerNewsClient(IOClient()),
+          ItemCache(),
+          FeedCache(),
+          HnpwaClient(),
           LoadBalancer.create(1, IsolateRunner.spawn),
         ),
       ),
@@ -46,14 +45,21 @@ class TopStoriesPage extends StatefulWidget {
 }
 
 class FetchStoryParams {
-  final hn.HackerNewsClient client;
-  final int storyId;
+  final HnpwaClient client;
+  final int itemId;
 
-  FetchStoryParams(this.client, this.storyId);
+  FetchStoryParams(this.client, this.itemId);
+}
+
+class FetchTopStoriesParams {
+  final HnpwaClient client;
+  final int page;
+
+  FetchTopStoriesParams(this.client, this.page);
 }
 
 class _TopStoriesPageState extends State<TopStoriesPage> {
-  Future<List<hn.Summary>> _topStories;
+  Future<Feed> _topStories;
 
   @override
   void initState() {
@@ -65,58 +71,81 @@ class _TopStoriesPageState extends State<TopStoriesPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: FutureBuilder<List<hn.Summary>>(
+      body: FutureBuilder<Feed>(
         future: _topStories,
         builder: (context, snapshot) {
-          final items = snapshot.data == null ? [] : snapshot.data;
-
-          return AnimatedStack(
-            currentIndex: snapshot.hasData ? 2 : snapshot.hasError ? 1 : 0,
-            children: [
-              LoadingView(),
-              ErrorView(error: snapshot.error),
-              RefreshIndicator(
-                onRefresh: () async {
-                  setState(() {
-                    _topStories = widget.repository.topStories();
-                  });
-
-                  await _topStories;
-                },
-                child: CustomScrollView(
-                  slivers: [
-                    SliverAppBar(
-                      backgroundColor: Colors.black,
-                      elevation: 0.0,
-                      floating: true,
-                      title: Row(children: [
-                        Padding(
-                          padding:
-                              const EdgeInsets.only(left: 8.0, right: 24.0),
-                          child: Icon(Icons.trending_up),
-                        ),
-                        Text("Trending"),
-                      ]),
-                    ),
-                    SliverList(
-                      delegate: SliverChildBuilderDelegate(
-                        (context, i) {
-                          final summary = items[i];
-
-                          return StoryItem(
-                            summary: summary,
-                            repository: widget.repository,
-                          );
-                        },
-                        childCount: items.length,
-                      ),
-                    )
-                  ],
-                ),
-              )
-            ],
+          return AnimatedSwitcher(
+            duration: Duration(milliseconds: 500),
+            child: _buildChild(snapshot),
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildChild(AsyncSnapshot<Feed> snapshot) {
+    if (snapshot.hasData) {
+      return FeedView(
+        items: snapshot.data.items,
+        repository: widget.repository,
+        onRefresh: () async {
+          setState(() {
+            _topStories = widget.repository.topStories(refresh: true);
+          });
+
+          await _topStories;
+        },
+      );
+    } else if (snapshot.hasError) {
+      return ErrorView(error: snapshot.error);
+    } else {
+      return LoadingView();
+    }
+  }
+}
+
+class FeedView extends StatelessWidget {
+  final List<FeedItem> items;
+  final RefreshCallback onRefresh;
+  final HackerNewsRepository repository;
+
+  const FeedView({
+    Key key,
+    @required this.items,
+    @required this.onRefresh,
+    @required this.repository,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: CustomScrollView(
+        slivers: [
+          SliverAppBar(
+            backgroundColor: Colors.black,
+            elevation: 0,
+            floating: true,
+            title: Row(children: [
+              Padding(
+                padding: const EdgeInsets.only(left: 8, right: 24),
+                child: Icon(Icons.trending_up),
+              ),
+              Text("Trending"),
+            ]),
+          ),
+          SliverList(
+            delegate: SliverChildBuilderDelegate(
+              (context, i) {
+                return FeedItemView(
+                  feedItem: items[i],
+                  repository: repository,
+                );
+              },
+              childCount: items.length,
+            ),
+          )
+        ],
       ),
     );
   }
@@ -143,11 +172,11 @@ class ErrorView extends StatelessWidget {
         children: [
           Icon(Icons.error),
           Padding(
-            padding: EdgeInsets.all(24.0),
+            padding: EdgeInsets.all(24),
             child: Text('Oh no, an error occurred!'),
           ),
           Padding(
-            padding: EdgeInsets.all(24.0),
+            padding: EdgeInsets.all(24),
             child: Text('$error'),
           ),
         ],
@@ -156,14 +185,14 @@ class ErrorView extends StatelessWidget {
   }
 }
 
-class StoryItem extends StatelessWidget {
-  final hn.Summary summary;
+class FeedItemView extends StatelessWidget {
+  final FeedItem feedItem;
   final HackerNewsRepository repository;
   final Color color;
 
-  const StoryItem({
+  const FeedItemView({
     Key key,
-    @required this.summary,
+    @required this.feedItem,
     @required this.repository,
     this.color = Colors.transparent,
   }) : super(key: key);
@@ -175,39 +204,39 @@ class StoryItem extends StatelessWidget {
       children: <Widget>[
         InkWell(
           onTap: () async {
-            if (await canLaunch(summary.url)) {
-              await launch(summary.url);
+            if (await canLaunch(feedItem.url)) {
+              await launch(feedItem.url);
             }
           },
           child: Padding(
             padding: const EdgeInsets.only(
-              left: 24.0,
-              right: 24.0,
-              bottom: 4.0,
+              left: 24,
+              right: 24,
+              bottom: 4,
             ),
             child: StoryTitle(
-              title: summary.title,
-              id: summary.id,
+              title: feedItem.title,
+              id: feedItem.id,
             ),
           ),
         ),
         Padding(
           padding: const EdgeInsets.only(
-            left: 20.0,
-            right: 24.0,
-            bottom: 16.0,
+            left: 20,
+            right: 24,
+            bottom: 16,
           ),
           child: StatsView(
-            score: summary.score,
-            commentsCount: '${summary.kids.length}+',
+            score: feedItem.points,
+            commentsCount: '${feedItem.commentsCount}+',
             onCommentsPressed: () {
               Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (context) {
-                    return StoryPage(
-                      title: summary.title,
+                    return ItemScreen(
+                      title: feedItem.title,
                       repository: repository,
-                      id: summary.id,
+                      id: feedItem.id,
                     );
                   },
                 ),
@@ -235,12 +264,12 @@ class StatsView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     var comments = Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 16.0),
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
       child: Row(
         children: <Widget>[
           Padding(
-            padding: const EdgeInsets.only(right: 8.0),
-            child: Icon(Icons.chat_bubble_outline, size: 14.0),
+            padding: const EdgeInsets.only(right: 8),
+            child: Icon(Icons.chat_bubble_outline, size: 14),
           ),
           Text(commentsCount),
         ],
@@ -250,12 +279,12 @@ class StatsView extends StatelessWidget {
     return Row(
       children: [
         Padding(
-          padding: const EdgeInsets.only(right: 4.0),
+          padding: const EdgeInsets.only(right: 4),
           child: Icon(Icons.keyboard_arrow_up),
         ),
         Container(
-          margin: const EdgeInsets.only(right: 12.0),
-          padding: const EdgeInsets.only(right: 0.0),
+          margin: const EdgeInsets.only(right: 12),
+          padding: const EdgeInsets.only(right: 0),
           child: Text('$score'),
         ),
         onCommentsPressed != null
@@ -276,7 +305,7 @@ class StoryTitle extends StatelessWidget {
     Key key,
     @required this.title,
     @required this.id,
-    this.fontSize = 24.0,
+    this.fontSize = 24,
     this.lineHeight = 1.3,
   }) : super(key: key);
 
@@ -294,12 +323,12 @@ class StoryTitle extends StatelessWidget {
   }
 }
 
-class StoryPage extends StatefulWidget {
+class ItemScreen extends StatefulWidget {
   final String title;
   final int id;
   final HackerNewsRepository repository;
 
-  const StoryPage({
+  const ItemScreen({
     Key key,
     @required this.id,
     @required this.repository,
@@ -307,23 +336,23 @@ class StoryPage extends StatefulWidget {
   }) : super(key: key);
 
   @override
-  _StoryPageState createState() => _StoryPageState();
+  _ItemScreenState createState() => _ItemScreenState();
 }
 
-class _StoryPageState extends State<StoryPage> {
-  Future<hn.Story> _storyFuture;
+class _ItemScreenState extends State<ItemScreen> {
+  Future<Item> _itemFuture;
 
   @override
   void initState() {
-    _storyFuture = widget.repository.story(widget.id);
+    _itemFuture = widget.repository.story(widget.id);
     super.initState();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: FutureBuilder<hn.Story>(
-        future: _storyFuture,
+      body: FutureBuilder<Item>(
+        future: _itemFuture,
         builder: (context, snapshot) {
           return CustomScrollView(
             slivers: <Widget>[
@@ -359,14 +388,15 @@ class _StoryPageState extends State<StoryPage> {
     );
   }
 
-  List<CommentItem> _buildComments(hn.Comment comment, int indentationLevel) {
-    final items = [CommentItem(comment, indentationLevel)];
+  List<CommentListItem> _buildComments(Item comment, int indentationLevel) {
+    final items = [CommentListItem(comment, indentationLevel)];
 
     if (comment.comments?.isEmpty ?? true) {
       return items;
     } else {
       return items
-        ..addAll(comment.comments.fold<List<CommentItem>>([], (list, comment) {
+        ..addAll(
+            comment.comments.fold<List<CommentListItem>>([], (list, comment) {
           return list..addAll(_buildComments(comment, indentationLevel + 1));
         }));
     }
@@ -374,11 +404,11 @@ class _StoryPageState extends State<StoryPage> {
 
   Iterable<Widget> _addItems(
     BuildContext context,
-    AsyncSnapshot<hn.Story> snapshot,
+    AsyncSnapshot<Item> snapshot,
   ) {
     if (snapshot.hasData) {
-      final items = snapshot.data.comments.fold<List<StoryPageItem>>(
-        [StatsItem(snapshot.data.score, snapshot.data.numComments)],
+      final items = snapshot.data.comments.fold<List<ItemScreenListItem>>(
+        [StatsListItem(snapshot.data.points, snapshot.data.commentsCount)],
         (list, comment) {
           return list..addAll(_buildComments(comment, 0));
         },
@@ -389,18 +419,19 @@ class _StoryPageState extends State<StoryPage> {
           delegate: SliverChildBuilderDelegate(
             (context, index) {
               final item = items[index];
-              if (item is StatsItem) {
+              if (item is StatsListItem) {
                 return Padding(
                   padding: const EdgeInsets.only(
-                    left: 20.0,
-                    right: 24.0,
+                    left: 20,
+                    right: 24,
+                    bottom: 20,
                   ),
                   child: StatsView(
                     score: item.score,
                     commentsCount: '${item.numComments}',
                   ),
                 );
-              } else if (item is CommentItem) {
+              } else if (item is CommentListItem) {
                 return new CommentView(
                   item: item,
                 );
@@ -432,47 +463,53 @@ class CommentView extends StatelessWidget {
     @required this.item,
   }) : super(key: key);
 
-  final CommentItem item;
+  final CommentListItem item;
 
   @override
   Widget build(BuildContext context) {
     return Container(
+      decoration: item.indentationLevel == 0
+          ? BoxDecoration(
+              border: Border(top: BorderSide(color: Colors.grey, width: 1)))
+          : null,
       margin: EdgeInsets.only(
-        left: item.indentationLevel * 16.0,
+        left: 24 + item.indentationLevel * 16.0,
+        right: 24,
       ),
       padding: EdgeInsets.only(
-        left: 24.0,
-        right: 24.0,
-        bottom: 24.0,
-        top: item.indentationLevel == 0 ? 16.0 : 0.0,
+        bottom: 16,
+        top: item.indentationLevel == 0 ? 16 : 0,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8.0),
-            child: Text(
-              item.comment.by ?? '[deleted]',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontFamily: 'CreteRound',
-                fontSize: 18.0,
-              ),
+          Text(
+            item.comment.user ?? '[deleted]',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontFamily: 'CreteRound',
+              fontSize: 18,
             ),
           ),
-          item.comment.text != null
+          item.comment.content != null
               ? Html(
-                  data: item.comment.text,
+                  onLinkTap: (link) async {
+                    if (await canLaunch(link)) {
+                      launch(link);
+                    }
+                  },
+                  blockSpacing: 8,
+                  data: item.comment.content,
                   defaultTextStyle: Theme.of(context)
                       .textTheme
                       .body1
-                      .copyWith(fontFamily: 'CreteRound', fontSize: 15.0),
+                      .copyWith(fontFamily: 'CreteRound', fontSize: 15),
                 )
               : Text(
                   '[deleted]',
                   style: TextStyle(
                     fontFamily: 'CreteRound',
-                    fontSize: 15.0,
+                    fontSize: 15,
                   ),
                 ),
         ],
@@ -481,106 +518,26 @@ class CommentView extends StatelessWidget {
   }
 }
 
-class StoryIcon extends StatelessWidget {
-  final hn.StoryType type;
+abstract class ItemScreenListItem {}
 
-  const StoryIcon({Key key, @required this.type}) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    switch (type) {
-      case hn.StoryType.poll:
-        return Icon(Icons.poll);
-      case hn.StoryType.comment:
-        return Icon(Icons.comment);
-      case hn.StoryType.job:
-        return Icon(Icons.work);
-      case hn.StoryType.story:
-      default:
-        return Icon(Icons.format_align_left);
-    }
-  }
-}
-
-abstract class StoryPageItem {}
-
-class StatsItem implements StoryPageItem {
+class StatsListItem implements ItemScreenListItem {
   final int score;
   final int numComments;
 
-  StatsItem(this.score, this.numComments);
+  StatsListItem(this.score, this.numComments);
 }
 
-class CommentItem implements StoryPageItem {
-  final hn.Comment comment;
+class CommentListItem implements ItemScreenListItem {
+  final Item comment;
   final int indentationLevel;
 
-  CommentItem(this.comment, this.indentationLevel);
-}
-
-class AnimatedStack extends StatefulWidget {
-  final int currentIndex;
-  final List<Widget> children;
-
-  const AnimatedStack({
-    Key key,
-    @required this.children,
-    @required this.currentIndex,
-  }) : super(key: key);
-
-  @override
-  _AnimatedStackState createState() => _AnimatedStackState();
-}
-
-class _AnimatedStackState extends State<AnimatedStack>
-    with TickerProviderStateMixin {
-  List<AnimationController> controllers;
-
-  @override
-  void initState() {
-    controllers = List.generate(widget.children.length, (i) {
-      return AnimationController(
-        vsync: this,
-        duration: Duration(milliseconds: 500),
-        value: widget.currentIndex == i ? 1.0 : 0.0,
-      );
-    });
-    super.initState();
-  }
-
-  @override
-  void didUpdateWidget(AnimatedStack oldWidget) {
-    if (oldWidget.currentIndex != widget.currentIndex) {
-      controllers[oldWidget.currentIndex].reverse();
-      controllers[widget.currentIndex].forward();
-    }
-
-    super.didUpdateWidget(oldWidget);
-  }
-
-  @override
-  void dispose() {
-    controllers.forEach((controller) => controller.dispose());
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      children: List.generate(widget.children.length, (i) {
-        return FadeTransition(
-          opacity: controllers[i],
-          child: widget.children[i],
-        );
-      }),
-    );
-  }
+  CommentListItem(this.comment, this.indentationLevel);
 }
 
 class HackerNewsRepository {
-  final StoriesCache storyCache;
-  final TrendingCache trendingCache;
-  final hn.HackerNewsClient client;
+  final ItemCache storyCache;
+  final FeedCache trendingCache;
+  final HnpwaClient client;
   final Future<LoadBalancer> loadBalancer;
 
   HackerNewsRepository(
@@ -590,19 +547,29 @@ class HackerNewsRepository {
     this.loadBalancer,
   );
 
-  Future<List<hn.Summary>> topStories() async {
-    if (trendingCache.isNotEmpty) return trendingCache.summaries;
+  Future<Feed> topStories({int page = 1, bool refresh = false}) async {
+    if (!refresh &&
+        trendingCache.isNotEmpty &&
+        trendingCache.feed.currentPage == page) {
+      return trendingCache.feed;
+    }
 
-    final results =
-        await (await loadBalancer).run(_fetchTopStoriesInBackground, client);
+    final results = await (await loadBalancer).run(
+      _fetchTopStoriesInBackground,
+      FetchTopStoriesParams(client, page),
+    );
 
-    trendingCache.summaries = results;
+    trendingCache.feed = Feed(
+      items: (trendingCache.feed?.items ?? []) + results.items,
+      currentPage: results.currentPage,
+      nextPage: results.nextPage,
+    );
 
-    return results;
+    return trendingCache.feed;
   }
 
-  Future<hn.Story> story(int id) async {
-    if (storyCache.contains(id)) return storyCache.story(id);
+  Future<Item> story(int id) async {
+    if (storyCache.contains(id)) return storyCache.item(id);
 
     final results = await (await loadBalancer)
         .run(_fetchStoryInBackground, FetchStoryParams(client, id));
@@ -612,39 +579,39 @@ class HackerNewsRepository {
     return results;
   }
 
-  static Future<List<hn.Summary>> _fetchTopStoriesInBackground(
-    hn.HackerNewsClient client,
+  static Future<Feed> _fetchTopStoriesInBackground(
+    FetchTopStoriesParams params,
   ) {
-    return client.topStories();
+    return params.client.news(page: params.page);
   }
 
-  static Future<hn.Story> _fetchStoryInBackground(
+  static Future<Item> _fetchStoryInBackground(
     FetchStoryParams params,
   ) {
-    return params.client.story(params.storyId);
+    return params.client.item(params.itemId);
   }
 }
 
-class TrendingCache {
-  List<hn.Summary> summaries;
+class FeedCache {
+  Feed feed;
 
-  bool get isEmpty => summaries == null;
+  bool get isEmpty => feed == null;
 
-  bool get isNotEmpty => summaries != null;
+  bool get isNotEmpty => feed != null;
 
-  void clear() => summaries = null;
+  void clear() => feed = null;
 }
 
-class StoriesCache {
-  final Map<int, hn.Story> _stories = {};
+class ItemCache {
+  final Map<int, Item> _items = {};
 
-  bool contains(int storyId) => _stories.containsKey(storyId);
+  bool contains(int itemId) => _items.containsKey(itemId);
 
-  hn.Story story(int storyId) => _stories[storyId];
+  Item item(int itemId) => _items[itemId];
 
-  void add(hn.Story story) => _stories[story.id] = story;
+  void add(Item item) => _items[item.id] = item;
 
   void clear() {
-    _stories.clear();
+    _items.clear();
   }
 }
